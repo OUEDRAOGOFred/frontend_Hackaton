@@ -1,0 +1,294 @@
+import axios from 'axios';
+
+// Configuration de base pour l'API
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
+// Instance Axios avec configuration de base
+// Création du client API avec Axios
+const apiClient = axios.create({
+    baseURL: 'http://localhost:5000/api',
+    timeout: 10000,
+    headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+    },
+    withCredentials: true,
+});
+
+// Intercepteur pour ajouter le token d'authentification
+apiClient.interceptors.request.use(
+    (config) => {
+        const token = localStorage.getItem('accessToken');
+        if (token) {
+            config.headers.Authorization = `Bearer ${token}`;
+        }
+        return config;
+    },
+    (error) => {
+        return Promise.reject(error);
+    }
+);
+
+// Intercepteur pour gérer les réponses et les erreurs
+apiClient.interceptors.response.use(
+    (response) => {
+        return response.data; // Retourner directement les données
+    },
+    async (error) => {
+        const originalRequest = error.config;
+
+        // Si le token a expiré (401) et que nous n'avons pas déjà tenté de le rafraîchir
+        if (error.response?.status === 401 && !originalRequest._retry) {
+            originalRequest._retry = true;
+
+            try {
+                const refreshToken = localStorage.getItem('refreshToken');
+                if (refreshToken) {
+                    const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {
+                        refresh_token: refreshToken
+                    });
+
+                    const { access_token } = response.data.data;
+                    localStorage.setItem('accessToken', access_token);
+
+                    // Refaire la requête originale avec le nouveau token
+                    originalRequest.headers.Authorization = `Bearer ${access_token}`;
+                    return apiClient(originalRequest);
+                }
+            } catch (refreshError) {
+                // Si le refresh token est aussi invalide, déconnecter l'utilisateur
+                localStorage.removeItem('accessToken');
+                localStorage.removeItem('refreshToken');
+                localStorage.removeItem('user');
+                window.location.href = '/login';
+                return Promise.reject(refreshError);
+            }
+        }
+
+        return Promise.reject(error);
+    }
+);
+
+// ========== Services d'authentification ==========
+export const authService = {
+    login: async (credentials) => {
+        try {
+            const { email, password } = credentials;
+            const response = await apiClient.post('/auth/login', { email, password });
+            // response est déjà les données !
+            if (response.success && response.accessToken) {
+                localStorage.setItem('accessToken', response.accessToken);
+                localStorage.setItem('refreshToken', response.refreshToken);
+                localStorage.setItem('user', JSON.stringify(response.user));
+                return response;
+            } else {
+                throw new Error(`Réponse invalide: ${JSON.stringify(response)}`);
+            }
+        } catch (error) {
+            console.error('❌ Erreur dans authService.login:', error);
+            throw error;
+        }
+    },
+
+    register: async (userData) => {
+        const response = await apiClient.post('/auth/register', userData);
+        if (response.success && response.accessToken) {
+            localStorage.setItem('accessToken', response.accessToken);
+            localStorage.setItem('refreshToken', response.refreshToken);
+            localStorage.setItem('user', JSON.stringify(response.user));
+        }
+        return response;
+    },
+
+    logout: async () => {
+        try {
+            await apiClient.post('/auth/logout');
+        } catch (error) {
+            console.error('Erreur lors de la déconnexion:', error);
+        } finally {
+            localStorage.removeItem('accessToken');
+            localStorage.removeItem('refreshToken');
+            localStorage.removeItem('user');
+        }
+    },
+
+    getProfile: () => apiClient.get('/auth/profile'),
+
+    updateProfile: (profileData) => apiClient.put('/auth/profile', profileData),
+
+    changePassword: (passwordData) => apiClient.put('/auth/change-password', passwordData),
+};
+
+// Exports individuels pour compatibilité
+export const login = authService.login;
+export const register = authService.register;
+
+// ========== Services des utilisateurs ==========
+export const userService = {
+    getUsers: (page = 1, limit = 10) => apiClient.get(`/users?page=${page}&limit=${limit}`),
+    
+    getUserById: (id) => apiClient.get(`/users/${id}`),
+    
+    createUser: (userData) => apiClient.post('/users', userData),
+    
+    updateUser: (id, userData) => apiClient.put(`/users/${id}`, userData),
+    
+    deleteUser: (id) => apiClient.delete(`/users/${id}`),
+    
+    getUserProfile: (id) => apiClient.get(`/users/${id}/profile`),
+    
+    updateUserProfile: (id, profileData) => apiClient.put(`/users/${id}/profile`, profileData),
+};
+
+// ========== Services des cours ==========
+export const courseService = {
+    getAllCourses: (params = {}) => apiClient.get('/courses', { params }),
+    
+    getCourseById: (id) => apiClient.get(`/courses/${id}`),
+    
+    createCourse: (courseData) => apiClient.post('/courses', courseData),
+    
+    updateCourse: (id, courseData) => apiClient.put(`/courses/${id}`, courseData),
+    
+    deleteCourse: (id) => apiClient.delete(`/courses/${id}`),
+    
+    getTeacherCourses: (teacherId) => apiClient.get(`/courses/teacher/${teacherId}`),
+    
+    getCourseStudents: (courseId) => apiClient.get(`/courses/${courseId}/students`),
+};
+
+// ========== Services des inscriptions ==========
+export const enrollmentService = {
+    createEnrollment: (enrollmentData) => apiClient.post('/enrollments', enrollmentData),
+    
+    getStudentEnrollments: (studentId) => apiClient.get(`/enrollments/student/${studentId}`),
+    
+    getCourseEnrollments: (courseId) => apiClient.get(`/enrollments/course/${courseId}`),
+    
+    updateEnrollmentStatus: (id, status) => apiClient.put(`/enrollments/${id}/status`, { status }),
+    
+    deleteEnrollment: (id) => apiClient.delete(`/enrollments/${id}`),
+};
+
+// ========== Services des devoirs ==========
+export const assignmentService = {
+    getAssignments: (params = {}) => apiClient.get('/assignments', { params }),
+    
+    getAssignmentById: (id) => apiClient.get(`/assignments/${id}`),
+    
+    createAssignment: (assignmentData) => apiClient.post('/assignments', assignmentData),
+    
+    updateAssignment: (id, assignmentData) => apiClient.put(`/assignments/${id}`, assignmentData),
+    
+    deleteAssignment: (id) => apiClient.delete(`/assignments/${id}`),
+    
+    publishAssignment: (id) => apiClient.post(`/assignments/${id}/publish`),
+};
+
+// ========== Services des soumissions ==========
+export const submissionService = {
+    createOrUpdateSubmission: (submissionData) => apiClient.post('/submissions', submissionData),
+    
+    submitAssignment: (id) => apiClient.post(`/submissions/${id}/submit`),
+    
+    getAssignmentSubmissions: (assignmentId, params = {}) => 
+        apiClient.get(`/assignments/${assignmentId}/submissions`, { params }),
+    
+    getStudentSubmissions: (studentId, params = {}) => 
+        apiClient.get(`/students/${studentId}/submissions`, { params }),
+};
+
+// ========== Services des inscriptions (enrollment) ==========
+export const enrollmentService = {
+    getMyEnrollments: () => apiClient.get('/enrollments/my'),
+    
+    enrollInCourse: (courseId) => apiClient.post(`/enrollments/courses/${courseId}`),
+    
+    getEnrollmentsByCourse: (courseId) => apiClient.get(`/enrollments/course/${courseId}`),
+    
+    unenrollFromCourse: (courseId) => apiClient.delete(`/enrollments/courses/${courseId}`),
+};
+
+// ========== Services des devoirs/assignments ==========
+export const assignmentService = {
+    getMyAssignments: () => apiClient.get('/assignments/my'),
+    
+    getAssignmentsByCourse: (courseId) => apiClient.get(`/assignments/course/${courseId}`),
+    
+    getAssignmentById: (id) => apiClient.get(`/assignments/${id}`),
+    
+    createAssignment: (assignmentData) => apiClient.post('/assignments', assignmentData),
+    
+    updateAssignment: (id, assignmentData) => apiClient.put(`/assignments/${id}`, assignmentData),
+    
+    deleteAssignment: (id) => apiClient.delete(`/assignments/${id}`),
+};
+
+// ========== Services des soumissions (submissions) ==========
+export const submissionService = {
+    getMySubmissions: () => apiClient.get('/submissions/my'),
+    
+    getSubmissionsByAssignment: (assignmentId) => apiClient.get(`/submissions/assignment/${assignmentId}`),
+    
+    submitAssignment: (submissionData) => apiClient.post('/submissions', submissionData),
+    
+    updateSubmission: (id, submissionData) => apiClient.put(`/submissions/${id}`, submissionData),
+    
+    deleteSubmission: (id) => apiClient.delete(`/submissions/${id}`),
+};
+
+// ========== Services des notes (grades) ==========
+export const gradeService = {
+    getMyGrades: () => apiClient.get('/grades/my'),
+    
+    gradeSubmission: (gradeData) => apiClient.post('/grades', gradeData),
+    
+    getStudentGrades: (studentId, params = {}) => 
+        apiClient.get(`/grades/student/${studentId}`, { params }),
+        
+    getGradesByAssignment: (assignmentId) => apiClient.get(`/grades/assignment/${assignmentId}`),
+};
+
+// ========== Services des notifications ==========
+export const notificationService = {
+    getMyNotifications: () => apiClient.get('/notifications/my'),
+    
+    createNotification: (notificationData) => apiClient.post('/notifications', notificationData),
+    
+    createBulkNotifications: (bulkData) => apiClient.post('/notifications/bulk', bulkData),
+    
+    createSystemNotification: (systemData) => apiClient.post('/notifications/system', systemData),
+    
+    getUserNotifications: (userId, params = {}) => 
+        apiClient.get(`/notifications/user/${userId}`, { params }),
+    
+    markAsRead: (id) => apiClient.put(`/notifications/${id}/read`),
+    
+    markAllAsRead: (userId) => apiClient.put(`/notifications/user/${userId}/mark-all-read`),
+    
+    deleteNotification: (id) => apiClient.delete(`/notifications/${id}`),
+    
+    getNotificationStats: (userId) => apiClient.get(`/notifications/stats/user/${userId}`),
+};
+
+// ========== Services d'analyse ==========
+export const analyticsService = {
+    getDashboardStats: (params = {}) => apiClient.get('/analytics/dashboard', { params }),
+    
+    getCourseAnalytics: (courseId) => apiClient.get(`/analytics/course/${courseId}`),
+    
+    getStudentAnalytics: (studentId, params = {}) => 
+        apiClient.get(`/analytics/student/${studentId}`, { params }),
+    
+    getTeacherAnalytics: (teacherId) => apiClient.get(`/analytics/teacher/${teacherId}`),
+    
+    getSystemAnalytics: (params = {}) => apiClient.get('/analytics/system', { params }),
+};
+
+// ========== Service de santé ==========
+export const healthService = {
+    checkHealth: () => apiClient.get('/health'),
+};
+
+// Export par défaut de l'instance apiClient
+export default apiClient;
